@@ -163,3 +163,5 @@ cython_debug/
 
 data/
 tmp*/
+tests/
+.DS_Store
