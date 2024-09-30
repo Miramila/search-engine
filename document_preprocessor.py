@@ -197,7 +197,7 @@ if __name__ == '__main__':
             mwe_list.append(line.strip())
 
     # read in 1000 line of sample documents
-    jsonl_file_path = '/Users/bonnysu/Documents/24Fall/SI650/HW1/wikipedia_200k_dataset.jsonl'  # Replace with your JSONL file path
+    jsonl_file_path = 'data/wikipedia_200k_dataset.jsonl'  # Replace with your JSONL file path
     documents = []
 
     with open(jsonl_file_path, 'r') as f:
@@ -244,7 +244,7 @@ if __name__ == '__main__':
     print(f"Average time per document (SpaCyTokenizer): {average_times[2]:.4f} seconds")
     
     # Estimate time to preprocess an entire corpus of 1,000,000 documents
-    num_documents = 1000000
+    num_documents = 200000
     estimated_times = [avg_time * num_documents for avg_time in average_times]
     print(f"Estimated time to preprocess 1,000,000 documents:")
     print(f" - SplitTokenizer: {estimated_times[0] / 3600:.2f} hours")
