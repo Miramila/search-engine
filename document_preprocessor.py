@@ -38,7 +38,6 @@ class Tokenizer:
         """
         output_tokens = []
         i = 0
-        sorted_mwe = sorted(self.multiword_expressions, key=len, reverse=True)
 
         if not self.multiword_expressions:
             output_tokens = input_tokens
@@ -46,7 +45,7 @@ class Tokenizer:
             # check if any multi-word expression matches
             while i < len(input_tokens):
                 matched = False
-                for mwe in sorted_mwe: # ensure the longest first
+                for mwe in sorted(self.multiword_expressions, key=len, reverse=True): # ensure the longest first
                     mwe_tokens = mwe.split()
                     if (
                         i + len(mwe_tokens) <= len(input_tokens) and

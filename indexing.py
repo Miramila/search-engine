@@ -5,8 +5,13 @@ DO NOT use the pickle module.
 '''
 
 from enum import Enum
-from document_preprocessor import Tokenizer
+from document_preprocessor import RegexTokenizer, Tokenizer
 from collections import Counter, defaultdict
+import os
+import json
+import matplotlib.pyplot as plt
+import time
+import sys
 
 class IndexType(Enum):
     # the two types of index currently supported are BasicInvertedIndex, PositionalIndex
@@ -155,6 +160,85 @@ class BasicInvertedIndex(InvertedIndex):
         super().__init__()
         self.statistics['index_type'] = 'BasicInvertedIndex'
 
+    def remove_doc(self, docid: int) -> None:
+        if docid not in self.document_metadata:
+            return
+        
+        update_index = []
+        for term in list(self.index.keys()):
+            for d,f in self.index[term]:
+                if d != docid:
+                    update_index.append((d,f))
+                else:
+                    self.statistics['vocab'][term] -= f
+            self.index[term] = update_index
+            if not self.index[term]:
+                del self.index[term]
+
+        del self.document_metadata[docid]
+
+    
+    def add_doc(self, docid: int, tokens: list[str]) -> None:
+        term_freq = Counter(tokens)
+        self.vocabulary.update(term_freq.keys())
+        self.document_metadata[docid] = {"length": len(tokens), "unique_tokens": len(term_freq)}
+
+        for term, freq in term_freq.items():
+            self.index[term].append((docid, freq))
+            self.statistics['vocab'][term] += freq
+
+    def get_postings(self, term: str) -> list:
+        return self.index.get(term, [])
+    
+    def get_doc_metadata(self, doc_id: int) -> dict[str, int]:
+        return self.document_metadata.get(str(doc_id), {})
+    
+    def get_term_metadata(self, term: str) -> dict[str, int]:
+        term_postings = self.index.get(term, [])
+        term_count = self.statistics['vocab'].get(term, 0)
+        doc_frequency = len(term_postings)
+
+        return {
+            "term_count": term_count,
+            "doc_frequency": doc_frequency
+        }
+
+    def get_statistics(self) -> dict[str, int]:
+        number_of_documents = len(self.document_metadata)
+        total_token_count = sum(meta['length'] for meta in self.document_metadata.values())
+        unique_token_count = len(self.vocabulary)
+        stored_total_token_count = sum(self.statistics['vocab'].values())
+        mean_document_length = total_token_count / number_of_documents if number_of_documents > 0 else 0
+
+        return {
+            "unique_token_count": unique_token_count,
+            "total_token_count": total_token_count,
+            "stored_total_token_count": stored_total_token_count,
+            "number_of_documents": number_of_documents,
+            "mean_document_length": mean_document_length
+        }
+
+    def save(self, index_directory_name: str) -> None:
+        if not os.path.exists(index_directory_name):
+            os.makedirs(index_directory_name)
+
+        with open(os.path.join(index_directory_name, 'index.json'), 'w') as f:
+            json.dump(self.index, f)
+
+        with open(os.path.join(index_directory_name, 'metadata.json'), 'w') as f:
+            json.dump(self.document_metadata, f)
+
+    def load(self, index_directory_name: str) -> None:
+        with open(os.path.join(index_directory_name, 'index.json'), 'r') as f:
+            self.index = json.load(f)
+
+        with open(os.path.join(index_directory_name, 'metadata.json'), 'r') as f:
+            self.document_metadata = json.load(f)
+        
+        self.vocabulary = set(self.index.keys())
+        for term, postings in self.index.items():
+            self.statistics['vocab'][term] = sum(freq for _, freq in postings)
+
 
 class PositionalInvertedIndex(BasicInvertedIndex):
     def __init__(self) -> None:
@@ -163,6 +247,38 @@ class PositionalInvertedIndex(BasicInvertedIndex):
         occurring in the document.
         """
         super().__init__()
+
+    def remove_doc(self, docid: int) -> None:
+        if docid not in self.document_metadata:
+            return
+        
+        update_index = []
+        for term in list(self.index.keys()):
+            for d,f,p in self.index[term]:
+                if d != docid:
+                    update_index.append((d,f,p))
+                else:
+                    self.statistics['vocab'][term] -= f
+            self.index[term] = update_index
+            if not self.index[term]:
+                del self.index[term]
+
+        del self.document_metadata[docid]
+    
+    def add_doc(self, docid: int, tokens: list[str]) -> None:
+        term_positions = defaultdict(list)
+
+        for position, term in enumerate(tokens):
+            if term is not None:
+                term_positions[term].append(position)
+
+        self.vocabulary.update(term_positions.keys())
+        self.document_metadata[docid] = {"length": len(tokens), "unique_tokens": len(term_positions)}
+
+        for term, positions in term_positions.items():
+            self.index[term].append((docid, len(positions), positions))
+            self.statistics['vocab'][term] += len(positions)
+
         
     
 
@@ -170,6 +286,7 @@ class Indexer:
     '''
     The Indexer class is responsible for creating the index used by the search/ranking algorithm.
     '''
+
 
     @staticmethod
     def create_index(index_type: IndexType, dataset_path: str,
@@ -195,7 +312,64 @@ class Indexer:
             An inverted index
         
         '''
-        raise NotImplementedError
+        if index_type == IndexType.BasicInvertedIndex:
+            index = BasicInvertedIndex()
+        elif index_type == IndexType.PositionalIndex:
+            index = PositionalInvertedIndex()
+        else:
+            index = SampleIndex()
+
+        if max_docs == 0:
+            return index
+
+        global_term_freq = Counter()
+        documents = []
+        with open(dataset_path, 'r') as f:
+            for line in f:
+                documents.append(json.loads(line))
+
+        for _, document in enumerate(documents):
+            doc_id = document["docid"]
+            if 0 <= max_docs <= doc_id:
+                break
+
+            text = document.get(text_key, "")
+            tokens = document_preprocessor.tokenize(text)
+            index.add_doc(doc_id, tokens)
+            global_term_freq.update(tokens)
+
+
+
+        # stopwords filter
+        if stopwords:
+            for term in list(index.index.keys()):
+                if term in stopwords:
+                    if term in index.index:
+                        postings = index.get_postings(term)
+                        for post in postings:
+                            if post[0] in index.document_metadata:
+                                index.document_metadata[doc_id]['unique_tokens'] -= 1
+                        del index.index[term]
+                        index.vocabulary.discard(term)
+                        del index.statistics['vocab'][term]
+
+        # minimum word frequency filter
+        if minimum_word_frequency > 0:
+            terms_to_remove = {term for term, freq in global_term_freq.items() if freq < minimum_word_frequency}
+
+            for term in terms_to_remove:
+                if term in index.index:
+                    postings = index.get_postings(term)
+                    for post in postings:
+                        if post[0] in index.document_metadata:
+                            index.document_metadata[doc_id]['unique_tokens'] -= 1
+
+                    del index.index[term]
+                    index.vocabulary.discard(term)
+                    del index.statistics['vocab'][term]
+
+        return index
+        
 
 
 # TODO for each inverted index implementation, use the Indexer to create an index with the first 10, 100, 1000, and 10000 documents in the collection (what was just preprocessed). At each size, record (1) how
@@ -223,4 +397,70 @@ class SampleIndex(InvertedIndex):
     
     def save(self):
         print('Index saved!')
+
+if __name__ == '__main__':
+    documents = []
+    with open('data/wikipedia_200k_dataset.jsonl', 'r') as f:
+        for _ in range(10000):
+            line = f.readline()
+            documents.append(json.loads(line))
+            
+    tokenizer = RegexTokenizer('\w+')
+    tokenized_documents = [tokenizer(doc["text"]) for doc in documents]
+
+    def index_documents(index_class, document_samples):
+        index = index_class()
+        start_time = time.time()
+        for docid, tokens in enumerate(document_samples):
+            index.add_doc(docid, tokens)
+        end_time = time.time()
+        time_taken = end_time - start_time
+        memory_usage = sys.getsizeof(index)
+        return time_taken, memory_usage
+    
+    # Prepare data for plotting
+    doc_counts = [10, 100, 1000, 10000]
+    basic_times = []
+    basic_memories = []
+    positional_times = []
+    positional_memories = []
+    
+    # Index documents using both Basic and Positional Inverted Indexes
+    for count in doc_counts:
+        sample_documents = tokenized_documents[:count]
+        
+        # Basic Inverted Index
+        time_taken, memory_usage = index_documents(BasicInvertedIndex, sample_documents)
+        basic_times.append(time_taken)
+        basic_memories.append(memory_usage)
+    
+        # Positional Inverted Index
+        time_taken, memory_usage = index_documents(PositionalInvertedIndex, sample_documents)
+        positional_times.append(time_taken)
+        positional_memories.append(memory_usage)
+    
+    # Plotting results
+    plt.figure(figsize=(12, 5))
+    
+    # Plot indexing time
+    plt.subplot(1, 2, 1)
+    plt.plot(doc_counts, basic_times, label='Basic Inverted Index', marker='o')
+    plt.plot(doc_counts, positional_times, label='Positional Inverted Index', marker='o')
+    plt.xlabel('Number of Documents')
+    plt.ylabel('Indexing Time (seconds)')
+    plt.title('Indexing Time vs. Number of Documents')
+    plt.legend()
+    
+    # Plot memory usage
+    plt.subplot(1, 2, 2)
+    plt.plot(doc_counts, basic_memories, label='Basic Inverted Index', marker='o')
+    plt.plot(doc_counts, positional_memories, label='Positional Inverted Index', marker='o')
+    plt.xlabel('Number of Documents')
+    plt.ylabel('Memory Usage (bytes)')
+    plt.title('Memory Usage vs. Number of Documents')
+    plt.legend()
+    
+    plt.tight_layout()
+    plt.show()
+
 
