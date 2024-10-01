@@ -406,7 +406,7 @@ if __name__ == '__main__':
             documents.append(json.loads(line))
             
     tokenizer = RegexTokenizer('\w+')
-    tokenized_documents = [tokenizer(doc["text"]) for doc in documents]
+    tokenized_documents = [tokenizer.tokenize(doc["text"]) for doc in documents]
 
     def index_documents(index_class, document_samples):
         index = index_class()
