@@ -12,6 +12,7 @@ import json
 import matplotlib.pyplot as plt
 import time
 import sys
+from tqdm import tqdm
 
 class IndexType(Enum):
     # the two types of index currently supported are BasicInvertedIndex, PositionalIndex
@@ -328,7 +329,7 @@ class Indexer:
             for line in f:
                 documents.append(json.loads(line))
 
-        for _, document in enumerate(documents):
+        for _, document in tqdm(enumerate(documents), total=len(documents), desc="Indexing Documents"):
             doc_id = document["docid"]
             if 0 <= max_docs <= doc_id:
                 break
