@@ -1,4 +1,13 @@
+from math import log2
+import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
+from collections import defaultdict, Counter
+import json
 
+from document_preprocessor import RegexTokenizer
+from indexing import IndexType, Indexer
+from ranker import BM25, PivotedNormalization, TF_IDF, DirichletLM, WordCountCosineSimilarity, WeightedTermFrequencyScorer
 
 """
 NOTE: We've curated a set of query-document relevance scores for you to use in this part of the assignment. 
@@ -23,12 +32,20 @@ def map_score(search_result_relevances: list[int], cut_off: int = 10) -> float:
     Returns:
         The MAP score
     """
-    # TODO: Implement MAP
-    pass
+    relevant_count = 0
+    precision_at_k_sum = 0
+
+    for i in range(len(search_result_relevances)):
+        if search_result_relevances[i] == 1:
+            relevant_count += 1
+            if i < cut_off:
+                precision_at_k_sum += relevant_count / (i + 1)
+
+    return precision_at_k_sum / relevant_count if relevant_count > 0 else 0
 
 
 def ndcg_score(search_result_relevances: list[float], 
-               ideal_relevance_score_ordering: list[float], cut_of: int = 10):
+               ideal_relevance_score_ordering: list[float], cut_off: int = 10):
     """
     Calculates the normalized discounted cumulative gain (NDCG) given a lists of relevance scores.
     Relevance scores can be ints or floats, depending on how the data was labeled for relevance.
@@ -46,8 +63,13 @@ def ndcg_score(search_result_relevances: list[float],
     Returns:
         The NDCG score
     """
-    # TODO: Implement NDCG
-    pass
+    def dcg(relevances: list[float], cut_off: int) -> float:
+        return sum((rel / log2(i + 1)) if i !=0 else rel for i, rel in enumerate(relevances[:cut_off]))
+
+    actual_dcg = dcg(search_result_relevances, cut_off)
+    ideal_dcg = dcg(ideal_relevance_score_ordering, cut_off)
+
+    return actual_dcg / ideal_dcg if ideal_dcg > 0 else 0.0
 
 
 def run_relevance_tests(relevance_data_filename: str, ranker) -> dict[str, float]:
@@ -76,8 +98,92 @@ def run_relevance_tests(relevance_data_filename: str, ranker) -> dict[str, float
   
     # TODO: Compute the average MAP and NDCG across all queries and return the scores
     # NOTE: You should also return the MAP and NDCG scores for each query in a list
-    return {'map': 0, 'ndcg': 0, 'map_list': [], 'ndcg_list': []}
+    # Load relevance dataset
+    relevance_data = pd.read_csv(relevance_data_filename)
+    queries = relevance_data['query'].unique()
+    map_scores = []
+    ndcg_scores = []
+
+    for query in queries:
+        query_data = relevance_data[relevance_data['query'] == query]
+        relevance_dict = dict(zip(query_data['docid'], query_data['rel']))
+
+        results = ranker.query(query)
+        ranked_docs = [docid for docid, _ in results]
+
+        relevance_scores = [relevance_dict.get(docid, 0) for docid in ranked_docs]
+        binary_relevance_scores = [1 if rel > 0 else 0 for rel in relevance_scores]
+        ideal_relevance_scores = sorted(relevance_scores, reverse=True)
+
+        map_scores.append(map_score(binary_relevance_scores, cut_off=10))
+        ndcg_scores.append(ndcg_score(relevance_scores, ideal_relevance_scores, cut_off=10))
+
+    avg_map = sum(map_scores) / len(map_scores) if map_scores else 0.0
+    avg_ndcg = sum(ndcg_scores) / len(ndcg_scores) if ndcg_scores else 0.0
+
+    return {
+        'map': avg_map,
+        'ndcg': avg_ndcg,
+        'map_list': map_scores,
+        'ndcg_list': ndcg_scores
+    }
+
+def get_doc_counts(dataset_name):
+        docid_to_word_counts = defaultdict(Counter)
+        rt = RegexTokenizer('\\w+')
+        with open(dataset_name) as f:
+            for line in f:
+                d = json.loads(line)
+                docid = d['docid']
+                tokens = rt.tokenize(d['text'])
+                docid_to_word_counts[docid] = Counter(tokens)
+        return docid_to_word_counts
 
 
 if __name__ == '__main__':
-    pass
+    # set up
+    index = Indexer.create_index(IndexType.BasicInvertedIndex, './data/wikipedia_200k_dataset.jsonl', RegexTokenizer('\\w+'), set(), 0)
+    index.save('data_processed')
+
+    docid_to_word_counts = get_doc_counts('./data/wikipedia_200k_dataset.jsonl')
+
+    rankers = [WordCountCosineSimilarity(index), TF_IDF(index), BM25(index), PivotedNormalization(index), DirichletLM(index), WeightedTermFrequencyScorer(index)]
+
+    
+
+
+
+    ranker_names = ['WordCountCosine', 'TF-IDF', 'BM25', 'PivotedNormalization', 'DirichletLM', 'WeightedTermFrequency']
+    ranker_results = {ranker: run_relevance_tests('relevance.csv', Ranker(index, preprocessor, stopwords, scorer))
+                      for ranker, scorer in zip(ranker_names, scorers)}
+    
+    # Prepare data for table
+    avg_map_scores = [ranker_results[ranker]['map'] for ranker in ranker_names]
+    avg_ndcg_scores = [ranker_results[ranker]['ndcg'] for ranker in ranker_names]
+    table_data = pd.DataFrame([avg_map_scores, avg_ndcg_scores], index=['MAP', 'NDCG'], columns=ranker_names)
+    
+    print("Table: Average Scores")
+    print(table_data)
+    
+    # Prepare data for plotting
+    map_scores_list = [(ranker, score) for ranker in ranker_names for score in ranker_results[ranker]['map_list']]
+    ndcg_scores_list = [(ranker, score) for ranker in ranker_names for score in ranker_results[ranker]['ndcg_list']]
+    
+    map_df = pd.DataFrame(map_scores_list, columns=['Ranker', 'Score'])
+    ndcg_df = pd.DataFrame(ndcg_scores_list, columns=['Ranker', 'Score'])
+    
+    # Plot MAP scores
+    plt.figure(figsize=(12, 5))
+    sns.violinplot(x='Ranker', y='Score', data=map_df)
+    plt.title('MAP Scores for Different Ranking Functions')
+    plt.ylabel('MAP Score')
+    plt.xticks(rotation=45)
+    plt.show()
+    
+    # Plot NDCG scores
+    plt.figure(figsize=(12, 5))
+    sns.violinplot(x='Ranker', y='Score', data=ndcg_df)
+    plt.title('NDCG Scores for Different Ranking Functions')
+    plt.ylabel('NDCG Score')
+    plt.xticks(rotation=45)
+    plt.show()

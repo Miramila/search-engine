@@ -52,9 +52,10 @@ class Ranker:
         # 3. Return **sorted** results as format [{docid: 100, score:0.5}, {{docid: 10, score:0.2}}]
 
         tokens = self.tokenize(query)
+        query_word_counts = Counter(tokens)
+
         if self.stopwords:
             tokens = [t for t in tokens if t not in self.stopwords]
-        query_word_counts = Counter(tokens)
 
         # Get relevant documents
         candidate_docs = set()
@@ -131,14 +132,15 @@ class WordCountCosineSimilarity(RelevanceScorer):
 
         # 2. Return the score
         dot_product = sum(doc_word_counts.get(word, 0) * query_word_counts.get(word, 0) for word in query_word_counts)
-        doc_magnitude = sqrt(sum(count ** 2 for count in doc_word_counts.values()))
-        query_magnitude = sqrt(sum(count ** 2 for count in query_word_counts.values()))
+        # doc_magnitude = sqrt(sum(doc_word_counts.get(word, 0) ** 2 for word in query_word_counts))
+        # print("doc_magnitude",doc_magnitude)
+        # query_magnitude = sqrt(sum(count ** 2 for count in query_word_counts.values()))
+        # print("query_magnitude", query_magnitude)
 
-        if doc_magnitude == 0 or query_magnitude == 0:
-            return 0.0
+        # if doc_magnitude == 0 or query_magnitude == 0:
+        #     return 0.0``
         
-        return dot_product / (doc_magnitude * query_magnitude)
-
+        return dot_product
 
 # TODO Implement DirichletLM
 class DirichletLM(RelevanceScorer):
@@ -154,15 +156,20 @@ class DirichletLM(RelevanceScorer):
         # 3. For all query_parts, compute score
 
         # 4. Return the score
-        score = 0.0
-        total_words = sum(meta['length'] for meta in self.index.document_metadata.values())
         doc_len = self.index.document_metadata[docid]["length"]
+        mu = self.parameters['mu']
+        score = 0.0
+        for q_term in query_word_counts:
+            if q_term and q_term in doc_word_counts:
+                postings = self.index.get_postings(q_term)
+                doc_tf = doc_word_counts[q_term]
 
-        for term in query_word_counts:
-            tf = doc_word_counts.get(term, 0)
-            cf = sum(count for _, count in self.index.index.get(term, []))
-            score += log((tf + self.parameters['mu'] * (cf / total_words)) / (doc_len + self.parameters['mu']))
-
+                if doc_tf > 0:
+                    query_tf = query_word_counts[q_term]
+                    p_wc = sum([doc[1] for doc in postings]) / self.index.get_statistics()['total_token_count']
+                    tfidf = log(1 + (doc_tf / (p_wc * mu)))
+                    score += query_tf * tfidf
+        score = score + len(query_word_counts) * log(mu / (doc_len+mu))
         return score
 
 
@@ -219,7 +226,7 @@ class PivotedNormalization(RelevanceScorer):
             if term in doc_word_counts:
                 tf = 1 + log(1 + log(doc_word_counts[term]))
                 df = len(self.index.index.get(term, []))
-                idf = log((total_docs + 1) / (df + 1))
+                idf = log((total_docs + 1) / df)
                 normalization = 1 / (1 - self.b + self.b * (doc_len / avgdl))
                 score += tf * idf * normalization
         return score
@@ -243,13 +250,23 @@ class TF_IDF(RelevanceScorer):
 
         for term in query_word_counts:
             if term in doc_word_counts:
-                tf = 1 + log(doc_word_counts[term])
+                tf = log(doc_word_counts[term] + 1)
                 df = len(self.index.index.get(term, []))
-                idf = log(total_docs / (1 + df))
+                idf = log(total_docs / df) + 1
                 score += tf * idf
         return score
 
 
 # TODO Implement your own ranker with proper heuristics
-class YourRanker(RelevanceScorer):
-    pass
+class WeightedTermFrequencyScorer(RelevanceScorer):
+    def __init__(self, index: InvertedIndex, parameters: dict = {}) -> None:
+        self.index = index
+        self.parameters = parameters
+
+    def score(self, docid: int, doc_word_counts: dict[str, int], query_word_counts: dict[str, int]) -> float:
+        score = 0.0
+        for term in query_word_counts:
+            if term in doc_word_counts:
+                weight = 1 + log(1 + query_word_counts[term])
+                score += weight * doc_word_counts[term]
+        return score
