@@ -99,7 +99,7 @@ def run_relevance_tests(relevance_data_filename: str, ranker) -> dict[str, float
     # TODO: Compute the average MAP and NDCG across all queries and return the scores
     # NOTE: You should also return the MAP and NDCG scores for each query in a list
     # Load relevance dataset
-    relevance_data = pd.read_csv(relevance_data_filename)
+    relevance_data = pd.read_csv(relevance_data_filename, sep=',')
     queries = relevance_data['query'].unique()
     map_scores = []
     ndcg_scores = []
@@ -128,34 +128,30 @@ def run_relevance_tests(relevance_data_filename: str, ranker) -> dict[str, float
         'ndcg_list': ndcg_scores
     }
 
-def get_doc_counts(dataset_name):
-        docid_to_word_counts = defaultdict(Counter)
-        rt = RegexTokenizer('\\w+')
-        with open(dataset_name) as f:
-            for line in f:
-                d = json.loads(line)
-                docid = d['docid']
-                tokens = rt.tokenize(d['text'])
-                docid_to_word_counts[docid] = Counter(tokens)
-        return docid_to_word_counts
+def process_raw_text(dataset_name):
+    raw_text = {}
+    with open(dataset_name) as f:
+        for line in f:
+            data = json.loads(line)
+            raw_text[data['docid']] = data['text']
+    return raw_text
+
 
 
 if __name__ == '__main__':
     # set up
     index = Indexer.create_index(IndexType.BasicInvertedIndex, './data/wikipedia_200k_dataset.jsonl', RegexTokenizer('\\w+'), set(), 0)
-    index.save('data_processed')
 
-    docid_to_word_counts = get_doc_counts('./data/wikipedia_200k_dataset.jsonl')
+    raw_text = process_raw_text('./data/wikipedia_200k_dataset.jsonl')
 
-    rankers = [WordCountCosineSimilarity(index), TF_IDF(index), BM25(index), PivotedNormalization(index), DirichletLM(index), WeightedTermFrequencyScorer(index)]
+    rankers = [WordCountCosineSimilarity(index, raw_text), TF_IDF(index, raw_text), BM25(index, raw_text), PivotedNormalization(index, raw_text), DirichletLM(index, raw_text), WeightedTermFrequencyScorer(index, raw_text)]
 
     
-
-
-
-    ranker_names = ['WordCountCosine', 'TF-IDF', 'BM25', 'PivotedNormalization', 'DirichletLM', 'WeightedTermFrequency']
-    ranker_results = {ranker: run_relevance_tests('relevance.csv', Ranker(index, preprocessor, stopwords, scorer))
-                      for ranker, scorer in zip(ranker_names, scorers)}
+    ranker_results = {}
+    for ranker in rankers:
+        ranker_results[ranker.__class__.__name__] = run_relevance_tests('./data/relevance.test.csv', ranker)
+    
+    ranker_names = list(ranker_results.keys())
     
     # Prepare data for table
     avg_map_scores = [ranker_results[ranker]['map'] for ranker in ranker_names]
