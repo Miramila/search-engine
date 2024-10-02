@@ -67,14 +67,19 @@ class Ranker:
         # Score documents
         scores = []
         for docid in candidate_docs:
-            doc_word_counts = {}
-            for term, doc_freq in self.index.index.items():
-                for doc_id, count in doc_freq:
-                    if doc_id == docid:
-                        if term not in doc_word_counts:
-                            doc_word_counts[term] = 0
-                        doc_word_counts[term] += count
-                        break
+            if self.raw_text_dict:
+                doc_text = self.raw_text_dict[docid]
+                tokens = self.tokenize(doc_text)
+                doc_word_counts = Counter(tokens)
+            else:
+                doc_word_counts = {}
+                for term, doc_freq in self.index.index.items():
+                    for doc_id, count in doc_freq:
+                        if doc_id == docid:
+                            if term not in doc_word_counts:
+                                doc_word_counts[term] = 0
+                            doc_word_counts[term] += count
+                            break
             score = self.scorer.score(docid, doc_word_counts, query_word_counts)
             scores.append((docid, score))
 
