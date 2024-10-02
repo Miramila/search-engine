@@ -3,6 +3,8 @@ This is the template for implementing the rankers for your search engine.
 You will be implementing WordCountCosineSimilarity, DirichletLM, TF-IDF, BM25, Pivoted Normalization, and your own ranker.
 """
 from indexing import InvertedIndex
+from math import sqrt, log
+from collections import Counter
 
 
 class Ranker:
@@ -49,7 +51,34 @@ class Ranker:
         
         # 3. Return **sorted** results as format [{docid: 100, score:0.5}, {{docid: 10, score:0.2}}]
 
-        raise NotImplementedError
+        tokens = self.tokenize(query)
+        if self.stopwords:
+            tokens = [t for t in tokens if t not in self.stopwords]
+        query_word_counts = Counter(tokens)
+
+        # Get relevant documents
+        candidate_docs = set()
+        for term in query_word_counts:
+            postings = self.index.index.get(term, [])
+            candidate_docs.update(doc_id for doc_id, _ in postings)
+
+
+        # Score documents
+        scores = []
+        for docid in candidate_docs:
+            doc_word_counts = {}
+            for term, doc_freq in self.index.index.items():
+                for doc_id, count in doc_freq:
+                    if doc_id == docid:
+                        if term not in doc_word_counts:
+                            doc_word_counts[term] = 0
+                        doc_word_counts[term] += count
+                        break
+            score = self.scorer.score(docid, doc_word_counts, query_word_counts)
+            scores.append((docid, score))
+
+        # Sort and return results
+        return sorted(scores, key=lambda x: x[1], reverse=True)
 
 
 class RelevanceScorer:
@@ -101,7 +130,15 @@ class WordCountCosineSimilarity(RelevanceScorer):
         # 1. Find the dot product of the word count vector of the document and the word count vector of the query
 
         # 2. Return the score
-        return NotImplementedError
+        dot_product = sum(doc_word_counts.get(word, 0) * query_word_counts.get(word, 0) for word in query_word_counts)
+        doc_magnitude = sqrt(sum(count ** 2 for count in doc_word_counts.values()))
+        query_magnitude = sqrt(sum(count ** 2 for count in query_word_counts.values()))
+
+        if doc_magnitude == 0 or query_magnitude == 0:
+            return 0.0
+        
+        return dot_product / (doc_magnitude * query_magnitude)
+
 
 # TODO Implement DirichletLM
 class DirichletLM(RelevanceScorer):
@@ -117,7 +154,16 @@ class DirichletLM(RelevanceScorer):
         # 3. For all query_parts, compute score
 
         # 4. Return the score
-        return NotImplementedError
+        score = 0.0
+        total_words = sum(meta['length'] for meta in self.index.document_metadata.values())
+        doc_len = self.index.document_metadata[docid]["length"]
+
+        for term in query_word_counts:
+            tf = doc_word_counts.get(term, 0)
+            cf = sum(count for _, count in self.index.index.get(term, []))
+            score += log((tf + self.parameters['mu'] * (cf / total_words)) / (doc_len + self.parameters['mu']))
+
+        return score
 
 
 # TODO Implement BM25
@@ -136,7 +182,18 @@ class BM25(RelevanceScorer):
         # 3. For all query parts, compute the TF and IDF to get a score    
 
         # 4. Return score
-        return NotImplementedError
+        score = 0.0
+        total_docs = len(self.index.document_metadata)
+        avgdl = sum(metadata["length"] for metadata in self.index.document_metadata.values()) / total_docs
+        doc_len = self.index.document_metadata[docid]["length"]
+
+        for term in query_word_counts:
+            if term in doc_word_counts:
+                df = len(self.index.index.get(term, []))
+                idf = log((total_docs - df + 0.5) / (df + 0.5))
+                tf = doc_word_counts[term]
+                score += idf * ((self.k1 + 1) * tf) / (self.k1 * ((1 - self.b) + self.b * (doc_len / avgdl)) + tf)
+        return score
 
 
 # TODO Implement Pivoted Normalization
@@ -153,7 +210,19 @@ class PivotedNormalization(RelevanceScorer):
         # 3. For all query parts, compute the TF, IDF, and QTF values to get a score
 
         # 4. Return the score
-        return NotImplementedError
+        score = 0.0
+        total_docs = len(self.index.document_metadata)
+        avgdl = sum(metadata["length"] for metadata in self.index.document_metadata.values()) / total_docs
+        doc_len = self.index.document_metadata[docid]["length"]
+
+        for term in query_word_counts:
+            if term in doc_word_counts:
+                tf = 1 + log(1 + log(doc_word_counts[term]))
+                df = len(self.index.index.get(term, []))
+                idf = log((total_docs + 1) / (df + 1))
+                normalization = 1 / (1 - self.b + self.b * (doc_len / avgdl))
+                score += tf * idf * normalization
+        return score
 
 
 # TODO Implement TF-IDF
@@ -169,7 +238,16 @@ class TF_IDF(RelevanceScorer):
         # 3. For all query parts, compute the TF and IDF to get a score
 
         # 4. Return the score
-        return NotImplementedError
+        score = 0.0
+        total_docs = len(self.index.document_metadata)
+
+        for term in query_word_counts:
+            if term in doc_word_counts:
+                tf = 1 + log(doc_word_counts[term])
+                df = len(self.index.index.get(term, []))
+                idf = log(total_docs / (1 + df))
+                score += tf * idf
+        return score
 
 
 # TODO Implement your own ranker with proper heuristics
